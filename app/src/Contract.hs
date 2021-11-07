@@ -11,27 +11,31 @@
 --      * request
 --      * respond
 {-# LANGUAGE StandaloneDeriving #-}
+import           Data.Text            
+import           Text.Printf
 import           Control.Monad        (void)
-import           Ledger               (Address, ScriptContext, PubKeyHash)
+import           Ledger               (Address, ScriptContext, PubKeyHash, txId)
 import qualified Ledger.Constraints   as Constraints
 import qualified Ledger.Typed.Scripts as Scripts
 import           Ledger.Value         (Value)
 import           Playground.Contract
 import           Plutus.Contract
 import qualified PlutusTx
+import qualified PlutusTx.AssocMap    as Map
 import           PlutusTx.Prelude     hiding (Applicative (..))
-import           Data.Map             as Map
 import           qualified Prelude    as Haskell
 
 data WithdrawalAnswer = Accept | Deny
     deriving stock (Haskell.Eq, Haskell.Show, Generic)
     deriving anyclass (FromJSON, ToJSON, ToSchema, ToArgument)
 
+PlutusTx.unstableMakeIsData ''WithdrawalAnswer
+PlutusTx.makeLift ''WithdrawalAnswer
 
 data PendingWithdrawal = PendingWithdrawal {
     id :: Integer,
     signatures :: [(PubKeyHash, WithdrawalAnswer)],
-    pendingPayouts :: !(Map PubKeyHash Value)
+    pendingPayouts :: !(Map.Map PubKeyHash Value)
 }   deriving stock (Haskell.Eq, Haskell.Show, Generic)
     deriving anyclass (FromJSON, ToJSON, ToSchema)
 
@@ -39,16 +43,17 @@ PlutusTx.unstableMakeIsData ''PendingWithdrawal
 PlutusTx.makeLift ''PendingWithdrawal
 
 data SharedBankAccountDatum = SharedBankAccountDatum {
-    owners :: ![PubKeyHash],
-    withdrawalReqCounter :: Integer,
-    pendingWithdrawals:: (Map Integer PendingWithdrawal)
+    datOwners :: ![PubKeyHash],
+    datWithdrawalReqCounter :: Integer,
+    datPendingWithdrawals:: (Map.Map Integer PendingWithdrawal)
 }   deriving stock (Haskell.Eq, Haskell.Show, Generic)
     deriving anyclass (FromJSON, ToJSON, ToSchema)
 
+PlutusTx.unstableMakeIsData ''SharedBankAccountDatum
 PlutusTx.makeLift ''SharedBankAccountDatum
 
 data WithdrawalRequest = WithdrawalRequest {
-    payouts :: !(Map PubKeyHash Value)
+    payouts :: !(Map.Map PubKeyHash Value)
 }   deriving stock (Haskell.Eq, Haskell.Show, Generic)
     deriving anyclass (FromJSON, ToJSON, ToSchema)
 
@@ -58,6 +63,7 @@ PlutusTx.makeLift ''WithdrawalRequest
 data SharedBankingAction = RequestWithdrawal WithdrawalRequest | RespondWithdrawal Integer WithdrawalAnswer
 	deriving Show
 
+PlutusTx.unstableMakeIsData ''SharedBankingAction
 PlutusTx.makeLift ''SharedBankingAction
 
 
@@ -85,7 +91,7 @@ sharedBankAccountInstance = Scripts.mkTypedValidator @SharedBanking
         wrap = Scripts.wrapValidator @SharedBankAccountDatum @SharedBankingAction
 
 data OpenParams = OpenParams {
-    initialFund :: Value,
+    opInitialFund :: Value,
     opOwners :: ![PubKeyHash]
 } deriving (Generic, ToJSON, FromJSON, ToSchema)
 
@@ -110,14 +116,18 @@ contract = selectList [open, request, respond]
 
 open :: AsContractError e => Promise () SharedBankAccountSchema e ()
 open = endpoint @"open" $ \openParams -> do
-    let tx = Constraints.mustPayToTheScript (SharedBankAccountDatum (owners openParams) 0 []) (initialFund openParams) 
-    void $ submitTxConstraints 
+    let tx = Constraints.mustPayToTheScript (SharedBankAccountDatum (opOwners openParams) 0 Map.empty) (opInitialFund openParams) 
+    ledgerTx <- submitTxConstraints sharedBankAccountTypedValidator tx
+    void $ awaitTxConfirmed $ txId ledgerTx
+    logInfo @Haskell.String $ printf "New bank account created"
 
 request :: AsContractError e => Promise () SharedBankAccountSchema e ()
-request = logInfo 
+request = endpoint @"request" $ \requestParams -> do
+    logInfo @Haskell.String $ printf "Called request endpoint"
 
 respond :: AsContractError e => Promise () SharedBankAccountSchema e ()
-respond = logInfo
+respond = endpoint @"respond" $ \respondParams -> do 
+    logInfo @Haskell.String $ printf "Called respond endpoint"
 
 endpoints :: AsContractError e => Contract () SharedBankAccountSchema e ()
 endpoints = contract
